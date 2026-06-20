@@ -2,7 +2,7 @@
 
 用手勢喺空中彈琴!利用 MediaPipe 手部追蹤 + Web Audio API,唔使任何實體琴鍵,對住鏡頭郁手指就可以彈出旋律。
 
-🔗 **[立即試玩](https://tomleung11123.github.io/air-piano/)**
+🔗 **[立即試玩](https://hk1098.github.io/air-piano/)**
 
 ## 功能
 
@@ -12,7 +12,7 @@
 
 ## 版權聲明
 
-© 2026 Tom Leung. All Rights Reserved.
+© 2026 HK1098. All Rights Reserved.
 
 本專案之原始碼、設計及內置內容均受版權保護,未經作者書面同意,**不得複製、修改、分發、重新發佈或用於任何商業用途**。
 
