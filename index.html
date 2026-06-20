@@ -4,6 +4,109 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>AIR PIANO</title>
+<script type="module">
+  import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
+  import { getAuth, GoogleAuthProvider, signInWithPopup, onAuthStateChanged, signOut }
+    from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
+  import { getFirestore, doc, getDoc, setDoc, collection, query, orderBy, limit, getDocs }
+    from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+
+  const firebaseConfig = {
+    apiKey: "AIzaSyDG76h44JgEpB9o0YsJnwbJNjWXMUhPbSI",
+    authDomain: "air-piano-38736.firebaseapp.com",
+    projectId: "air-piano-38736",
+    storageBucket: "air-piano-38736.firebasestorage.app",
+    messagingSenderId: "151685464674",
+    appId: "1:151685464674:web:86b9df8c9ef7b9632f073b"
+  };
+
+  const app = initializeApp(firebaseConfig);
+  const auth = getAuth(app);
+  const db = getFirestore(app);
+  const provider = new GoogleAuthProvider();
+
+  let currentUser = null;
+
+  onAuthStateChanged(auth, (user) => {
+    currentUser = user;
+    const loginBtn = document.getElementById('googleLoginBtn');
+    const userInfo = document.getElementById('userInfo');
+    if (user) {
+      if (loginBtn) loginBtn.style.display = 'none';
+      if (userInfo) {
+        userInfo.style.display = 'flex';
+        userInfo.querySelector('#userName').textContent = user.displayName || '玩家';
+      }
+      if (window.currentSongIdForBoard) {
+        window.submitScore(window.currentSongIdForBoard, window.lastFinalScore || 0);
+      }
+    } else {
+      if (loginBtn) loginBtn.style.display = 'inline-block';
+      if (userInfo) userInfo.style.display = 'none';
+    }
+  });
+
+  window.firebaseLogin = async function() {
+    try {
+      await signInWithPopup(auth, provider);
+    } catch (e) {
+      console.error('登入失敗', e);
+      alert('登入失敗，請再試一次');
+    }
+  };
+
+  window.firebaseLogout = async function() {
+    await signOut(auth);
+  };
+
+  window.submitScore = async function(songId, score) {
+    if (!currentUser || !songId) return;
+    const ref = doc(db, 'scores', songId, 'entries', currentUser.uid);
+    try {
+      const existing = await getDoc(ref);
+      if (!existing.exists() || score > existing.data().score) {
+        await setDoc(ref, {
+          uid: currentUser.uid,
+          displayName: currentUser.displayName || '玩家',
+          score: score,
+          updatedAt: Date.now()
+        });
+      }
+      window.refreshLeaderboard && window.refreshLeaderboard(songId);
+    } catch (e) {
+      console.error('上載分數失敗', e);
+    }
+  };
+
+  window.refreshLeaderboard = async function(songId) {
+    const list = document.getElementById('leaderboardList');
+    if (!list || !songId) return;
+    list.innerHTML = '<div style="opacity:0.5;font-size:12px">載入中...</div>';
+    try {
+      const q = query(collection(db, 'scores', songId, 'entries'), orderBy('score', 'desc'), limit(10));
+      const snap = await getDocs(q);
+      if (snap.empty) {
+        list.innerHTML = '<div style="opacity:0.5;font-size:12px">未有人上榜，搶頭位！</div>';
+        return;
+      }
+      let html = '';
+      let rank = 1;
+      snap.forEach(d => {
+        const data = d.data();
+        const isMe = currentUser && data.uid === currentUser.uid;
+        html += `<div style="display:flex;justify-content:space-between;padding:4px 0;font-size:13px;${isMe ? 'color:#c8a8ff;font-weight:bold;' : ''}">
+          <span>${rank}. ${data.displayName}${isMe ? '（你）' : ''}</span>
+          <span>${data.score}</span>
+        </div>`;
+        rank++;
+      });
+      list.innerHTML = html;
+    } catch (e) {
+      console.error('讀取排行榜失敗', e);
+      list.innerHTML = '<div style="opacity:0.5;font-size:12px">讀取失敗</div>';
+    }
+  };
+</script>
 <style>
   @import url('https://fonts.googleapis.com/css2?family=DM+Serif+Display&family=DM+Mono:wght@300;400&display=swap');
   * { margin:0; padding:0; box-sizing:border-box; }
@@ -295,6 +398,19 @@
     </div>
     <div id="finalScoreLH" style="font-family:'DM Serif Display',serif; font-size:32px; color:#8effa8; margin-top:4px;">0</div>
     <p>左手最高連擊</p>
+
+    <div id="leaderboardBox" style="margin-top:12px; padding-top:12px; border-top:1px solid rgba(255,255,255,0.1); width:200px;">
+      <div style="font-size:10px; letter-spacing:2px; opacity:0.4; text-transform:uppercase; margin-bottom:8px;">排行榜 TOP 10</div>
+      <div id="leaderboardList" style="opacity:0.5; font-size:12px;">未登入</div>
+      <button id="googleLoginBtn" onclick="window.firebaseLogin()" style="display:none; margin-top:10px; font-size:12px; padding:6px 12px; background:rgba(255,255,255,0.08); border:1px solid rgba(255,255,255,0.2); color:#fff; border-radius:6px; cursor:pointer;">
+        用 Google 登入交分上榜
+      </button>
+      <div id="userInfo" style="display:none; align-items:center; justify-content:space-between; margin-top:10px; font-size:12px;">
+        <span id="userName"></span>
+        <span onclick="window.firebaseLogout()" style="opacity:0.4; cursor:pointer; text-decoration:underline;">登出</span>
+      </div>
+    </div>
+
     <div id="doneBtnRow">
       <button class="menuBtn" id="restartBtn">再玩一次</button>
       <button class="menuBtn" id="doneMenuBtn">選擇歌曲</button>
@@ -712,6 +828,14 @@ function endSong() {
   document.getElementById('goodCount').textContent = goodCount;
   document.getElementById('missCount').textContent = missCount;
   document.getElementById('doneBanner').style.display = 'flex';
+
+  // 上載分數 + 顯示排行榜
+  if (currentSong && currentSong.id) {
+    window.currentSongIdForBoard = currentSong.id;
+    window.lastFinalScore = maxCombo;
+    window.submitScore(currentSong.id, maxCombo);
+    window.refreshLeaderboard(currentSong.id);
+  }
 }
 
 // ── Left-hand: independent voice, same press mechanic as right hand ────────
