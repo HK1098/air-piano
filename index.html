@@ -118,7 +118,7 @@
   #stage { position:relative; width:100vw; height:100vh; overflow:hidden; }
   #videoEl {
     position:absolute; inset:0; width:100%; height:100%;
-    object-fit:cover; transform:scaleX(-1); opacity:0; transition:opacity 0.6s;
+    object-fit:contain; transform:scaleX(-1); opacity:0; transition:opacity 0.6s;
   }
   #videoEl.active { opacity:1; }
   #overlayCanvas { position:absolute; inset:0; width:100%; height:100%; min-width:100px; min-height:100px; z-index:7; display:block; }
@@ -1526,15 +1526,36 @@ function onResults(res) {
   const c=canvas.getContext('2d');
   c.clearRect(0,0,W,H);
 
+  // The video element uses object-fit:contain, so the actual visible
+  // camera image only fills a centered sub-rectangle of the canvas
+  // (letterboxed) unless the camera's aspect ratio happens to exactly
+  // match the window's. MediaPipe landmark coordinates are normalized
+  // 0..1 against the FULL raw camera frame, so everything we draw
+  // (keyboard, finger dot, judgment popups) needs to be confined to
+  // that same sub-rectangle — otherwise zones near the edges (worst in
+  // corners) would sit outside what's actually visible/reachable.
+  const vw = video.videoWidth, vh = video.videoHeight;
+  let dW = W, dH = H, offX = 0, offY = 0;
+  if (vw && vh) {
+    const fitScale = Math.min(W / vw, H / vh);
+    dW = vw * fitScale;
+    dH = vh * fitScale;
+    offX = (W - dW) / 2;
+    offY = (H - dH) / 2;
+  }
+  c.save();
+  c.translate(offX, offY);
+
   if (calibActive) {
     if (res.multiHandLandmarks?.length) {
       const { rightHandLm } = classifyHands(res.multiHandLandmarks, res.multiHandedness);
       if (rightHandLm) processCalibrationFrame(rightHandLm);
     }
+    c.restore();
     return;
   }
 
-  if (!gameActive) return;
+  if (!gameActive) { c.restore(); return; }
 
   if (res.multiHandLandmarks?.length) {
     const count = res.multiHandLandmarks.length;
@@ -1542,12 +1563,12 @@ function onResults(res) {
 
     const { rightHandLm, leftHandLm } = classifyHands(res.multiHandLandmarks, res.multiHandedness);
 
-    if (rightHandLm) processFinger(rightHandLm, c, W, H);
+    if (rightHandLm) processFinger(rightHandLm, c, dW, dH);
     if (leftHandLm) {
-      processLeftHand(leftHandLm, c, W, H);
+      processLeftHand(leftHandLm, c, dW, dH);
     } else {
       lhInZone = false; lhHeld = false; lhHoldStart = null;
-      drawLHIndicator(c, W, H, -100, -100);
+      drawLHIndicator(c, dW, dH, -100, -100);
     }
   } else {
     statusEl.textContent = 'no hands detected';
@@ -1557,12 +1578,13 @@ function onResults(res) {
     rhFilterY.reset();
     holdNote = null; holdStart = null; pressArmed = false;
     lhInZone = false; lhHeld = false; lhHoldStart = null;
-    drawLHIndicator(c, W, H, -100, -100);
+    drawLHIndicator(c, dW, dH, -100, -100);
   }
 
-  const kbTop = drawKeyboard(c, W, H);
-  drawTargetIndicator(c, W, H, kbTop);
+  const kbTop = drawKeyboard(c, dW, dH);
+  drawTargetIndicator(c, dW, dH, kbTop);
   drawJudgmentPopups(c);
+  c.restore();
 }
 
 // ── MediaPipe + playback init ─────────────────────────────────────────────────
