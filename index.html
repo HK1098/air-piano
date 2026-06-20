@@ -26,23 +26,68 @@
   const provider = new GoogleAuthProvider();
 
   let currentUser = null;
+  let currentNickname = '';
 
-  onAuthStateChanged(auth, (user) => {
+  // 暱稱規則：去頭尾空白後 1～20 個字，不可全空白
+  function sanitizeNickname(raw) {
+    if (!raw) return '';
+    const trimmed = raw.trim().slice(0, 20);
+    return trimmed;
+  }
+
+  async function ensureNickname(user) {
+    const ref = doc(db, 'users', user.uid);
+    const snap = await getDoc(ref);
+    if (snap.exists() && snap.data().nickname) {
+      currentNickname = snap.data().nickname;
+      syncUserUI();
+      return;
+    }
+    // 第一次登入，要求改個暱稱（避免直接用 Google 全名公開）
+    let name = '';
+    while (!name) {
+      const input = prompt('幫自己改個顯示喺排行榜嘅暱稱（唔使用真名）：', user.displayName ? user.displayName.split(' ')[0] : '');
+      if (input === null) { name = '玩家' + user.uid.slice(0, 4); break; } // 撳取消都要有個 fallback
+      name = sanitizeNickname(input);
+    }
+    currentNickname = name;
+    await setDoc(ref, { nickname: name, updatedAt: Date.now() }, { merge: true });
+    syncUserUI();
+  }
+
+  window.changeNickname = async function() {
+    if (!currentUser) return;
+    const input = prompt('改返你嘅排行榜暱稱：', currentNickname);
+    if (input === null) return;
+    const name = sanitizeNickname(input);
+    if (!name) { alert('暱稱唔可以淨係得空白'); return; }
+    currentNickname = name;
+    await setDoc(doc(db, 'users', currentUser.uid), { nickname: name, updatedAt: Date.now() }, { merge: true });
+    syncUserUI();
+    // 注意：呢個改動只會套用喺之後交嘅新分數，舊有排行榜紀錄唔會自動更新名稱
+  };
+
+  function syncUserUI() {
+    document.querySelectorAll('.googleLoginBtn').forEach(el => {
+      el.style.display = currentUser ? 'none' : 'inline-block';
+    });
+    document.querySelectorAll('.userInfo').forEach(el => {
+      el.style.display = currentUser ? 'flex' : 'none';
+      const nameEl = el.querySelector('.userName');
+      if (nameEl) nameEl.textContent = currentUser ? currentNickname : '';
+    });
+  }
+
+  onAuthStateChanged(auth, async (user) => {
     currentUser = user;
-    const loginBtn = document.getElementById('googleLoginBtn');
-    const userInfo = document.getElementById('userInfo');
     if (user) {
-      if (loginBtn) loginBtn.style.display = 'none';
-      if (userInfo) {
-        userInfo.style.display = 'flex';
-        userInfo.querySelector('#userName').textContent = user.displayName || '玩家';
-      }
+      await ensureNickname(user);
       if (window.currentSongIdForBoard) {
         window.submitScore(window.currentSongIdForBoard, window.lastFinalScore || 0);
       }
     } else {
-      if (loginBtn) loginBtn.style.display = 'inline-block';
-      if (userInfo) userInfo.style.display = 'none';
+      currentNickname = '';
+      syncUserUI();
     }
   });
 
@@ -67,7 +112,7 @@
       if (!existing.exists() || score > existing.data().score) {
         await setDoc(ref, {
           uid: currentUser.uid,
-          displayName: currentUser.displayName || '玩家',
+          displayName: currentNickname || '玩家',
           score: score,
           updatedAt: Date.now()
         });
@@ -78,32 +123,37 @@
     }
   };
 
-  window.refreshLeaderboard = async function(songId) {
-    const list = document.getElementById('leaderboardList');
-    if (!list || !songId) return;
-    list.innerHTML = '<div style="opacity:0.5;font-size:12px">載入中...</div>';
+  // listEl 可以係單一個 DOM element，或者一個 querySelectorAll selector 字串，
+  // 等同一首歌嘅排行榜可以同時喺結算畫面同揀歌畫面顯示
+  window.refreshLeaderboard = async function(songId, listSelector) {
+    const lists = listSelector
+      ? document.querySelectorAll(listSelector)
+      : document.querySelectorAll('.leaderboardList');
+    if (!lists.length || !songId) return;
+    lists.forEach(list => { list.innerHTML = '<div style="opacity:0.5;font-size:12px">載入中...</div>'; });
     try {
       const q = query(collection(db, 'scores', songId, 'entries'), orderBy('score', 'desc'), limit(10));
       const snap = await getDocs(q);
+      let html;
       if (snap.empty) {
-        list.innerHTML = '<div style="opacity:0.5;font-size:12px">未有人上榜，搶頭位！</div>';
-        return;
+        html = '<div style="opacity:0.5;font-size:12px">未有人上榜，搶頭位！</div>';
+      } else {
+        html = '';
+        let rank = 1;
+        snap.forEach(d => {
+          const data = d.data();
+          const isMe = currentUser && data.uid === currentUser.uid;
+          html += `<div style="display:flex;justify-content:space-between;padding:4px 0;font-size:13px;${isMe ? 'color:#c8a8ff;font-weight:bold;' : ''}">
+            <span>${rank}. ${data.displayName}${isMe ? '（你）' : ''}</span>
+            <span>${data.score}</span>
+          </div>`;
+          rank++;
+        });
       }
-      let html = '';
-      let rank = 1;
-      snap.forEach(d => {
-        const data = d.data();
-        const isMe = currentUser && data.uid === currentUser.uid;
-        html += `<div style="display:flex;justify-content:space-between;padding:4px 0;font-size:13px;${isMe ? 'color:#c8a8ff;font-weight:bold;' : ''}">
-          <span>${rank}. ${data.displayName}${isMe ? '（你）' : ''}</span>
-          <span>${data.score}</span>
-        </div>`;
-        rank++;
-      });
-      list.innerHTML = html;
+      lists.forEach(list => { list.innerHTML = html; });
     } catch (e) {
       console.error('讀取排行榜失敗', e);
-      list.innerHTML = '<div style="opacity:0.5;font-size:12px">讀取失敗</div>';
+      lists.forEach(list => { list.innerHTML = '<div style="opacity:0.5;font-size:12px">讀取失敗</div>'; });
     }
   };
 </script>
@@ -401,13 +451,16 @@
 
     <div id="leaderboardBox" style="margin-top:12px; padding-top:12px; border-top:1px solid rgba(255,255,255,0.1); width:200px;">
       <div style="font-size:10px; letter-spacing:2px; opacity:0.4; text-transform:uppercase; margin-bottom:8px;">排行榜 TOP 10</div>
-      <div id="leaderboardList" style="opacity:0.5; font-size:12px;">未登入</div>
-      <button id="googleLoginBtn" onclick="window.firebaseLogin()" style="display:none; margin-top:10px; font-size:12px; padding:6px 12px; background:rgba(255,255,255,0.08); border:1px solid rgba(255,255,255,0.2); color:#fff; border-radius:6px; cursor:pointer;">
+      <div id="resultLeaderboardList" class="leaderboardList" style="opacity:0.5; font-size:12px;">未登入</div>
+      <button class="googleLoginBtn" onclick="window.firebaseLogin()" style="display:none; margin-top:10px; font-size:12px; padding:6px 12px; background:rgba(255,255,255,0.08); border:1px solid rgba(255,255,255,0.2); color:#fff; border-radius:6px; cursor:pointer;">
         用 Google 登入交分上榜
       </button>
-      <div id="userInfo" style="display:none; align-items:center; justify-content:space-between; margin-top:10px; font-size:12px;">
-        <span id="userName"></span>
-        <span onclick="window.firebaseLogout()" style="opacity:0.4; cursor:pointer; text-decoration:underline;">登出</span>
+      <div class="userInfo" style="display:none; align-items:center; justify-content:space-between; margin-top:10px; font-size:12px; gap:8px;">
+        <span class="userName"></span>
+        <span style="opacity:0.5; display:flex; gap:8px;">
+          <span onclick="window.changeNickname()" style="cursor:pointer; text-decoration:underline;">改名</span>
+          <span onclick="window.firebaseLogout()" style="cursor:pointer; text-decoration:underline;">登出</span>
+        </span>
       </div>
     </div>
 
@@ -434,6 +487,21 @@
         <div class="detailArtist" id="detailArtist"></div>
         <div class="detailMeta" id="detailMeta"></div>
         <div class="detailDesc" id="detailDesc"></div>
+
+        <div id="detailLeaderboardBox" style="margin-top:18px; padding-top:14px; border-top:1px solid rgba(255,255,255,0.1);">
+          <div style="font-size:10px; letter-spacing:2px; opacity:0.4; text-transform:uppercase; margin-bottom:8px;">排行榜 TOP 10</div>
+          <div id="selectLeaderboardList" class="leaderboardList" style="opacity:0.5; font-size:12px;">未登入</div>
+          <button class="googleLoginBtn" onclick="window.firebaseLogin()" style="display:none; margin-top:10px; font-size:12px; padding:6px 12px; background:rgba(255,255,255,0.08); border:1px solid rgba(255,255,255,0.2); color:#fff; border-radius:6px; cursor:pointer;">
+            用 Google 登入交分上榜
+          </button>
+          <div class="userInfo" style="display:none; align-items:center; justify-content:space-between; margin-top:10px; font-size:12px; gap:8px;">
+            <span class="userName"></span>
+            <span style="opacity:0.5; display:flex; gap:8px;">
+              <span onclick="window.changeNickname()" style="cursor:pointer; text-decoration:underline;">改名</span>
+              <span onclick="window.firebaseLogout()" style="cursor:pointer; text-decoration:underline;">登出</span>
+            </span>
+          </div>
+        </div>
       </div>
     </div>
   </div>
@@ -834,7 +902,7 @@ function endSong() {
     window.currentSongIdForBoard = currentSong.id;
     window.lastFinalScore = maxCombo;
     window.submitScore(currentSong.id, maxCombo);
-    window.refreshLeaderboard(currentSong.id);
+    window.refreshLeaderboard(currentSong.id, '#resultLeaderboardList');
   }
 }
 
@@ -1706,6 +1774,8 @@ function showSongDetail(song) {
   document.getElementById('detailMeta').textContent = song.meta;
   document.getElementById('detailDesc').textContent = song.desc || '';
   document.getElementById('songDetail').classList.add('show');
+
+  if (window.refreshLeaderboard) window.refreshLeaderboard(song.id, '#selectLeaderboardList');
 }
 
 function selectSong(songId) {
